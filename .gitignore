@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local editor/runtime state
+.agents/
+.codex/
+.vscode/
+
+# Generated detection outputs
+keyboard_key_detection/output/*
+!keyboard_key_detection/output/README.md
+
+# Removed legacy/generated folders
+keyboard_key_detection/edit_keyboard/
+keyboard_key_detection/feedback/
+keyboard_key_detection/keyboard_vision/
+keyboard_key_detection/legacy_opencv/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

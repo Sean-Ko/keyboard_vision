@@ -1,0 +1,23 @@
+name: Python smoke test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  py-compile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Python files
+        working-directory: keyboard_key_detection
+        run: |
+          python -m py_compile calibrate_keyboard.py app.py config.py detector.py detector_core.py gui_review.py image_io.py outputs.py

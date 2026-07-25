@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+output/*
+!output/README.md
+edit_keyboard/
+feedback/
+keyboard_vision/
+legacy_opencv/
