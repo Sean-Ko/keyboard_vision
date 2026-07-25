@@ -1151,11 +1151,64 @@ def merge_right_edge_vertical_duplicates(keys):
 
 
 def filter_sparse_rows(keys):
-    row_counts = {}
+    if len(keys) < 10:
+        return keys
+
+    normal_widths = [key["w"] for key in keys if key["key_type"] == "normal_key"]
+    typical_w = float(np.median(normal_widths or [key["w"] for key in keys]))
+    typical_h = float(np.median([key["h"] for key in keys]))
+
+    rows = {}
     for key in keys:
-        row_counts[key["row"]] = row_counts.get(key["row"], 0) + 1
-    valid_rows = {row for row, count in row_counts.items() if count >= CONFIG["min_row_key_count"]}
-    return reindex_rows_and_columns([key for key in keys if key["row"] in valid_rows])
+        rows.setdefault(key["row"], []).append(key)
+
+    row_stats = {}
+    for row, row_keys in rows.items():
+        row_stats[row] = {
+            "count": len(row_keys),
+            "cy": float(np.median([key["cy"] for key in row_keys])),
+            "min_x": min(key["cx"] for key in row_keys),
+            "max_x": max(key["cx"] for key in row_keys),
+        }
+
+    def has_local_row_support(key, row_keys):
+        left = [
+            other
+            for other in row_keys
+            if other is not key
+            and 0 < key["cx"] - other["cx"] <= typical_w * 2.2
+            and abs(key["cy"] - other["cy"]) <= typical_h * 0.75
+        ]
+        right = [
+            other
+            for other in row_keys
+            if other is not key
+            and 0 < other["cx"] - key["cx"] <= typical_w * 2.2
+            and abs(key["cy"] - other["cy"]) <= typical_h * 0.75
+        ]
+        return bool(left or right)
+
+    def has_neighbor_row_support(key, row):
+        for other_row, stats in row_stats.items():
+            if other_row == row:
+                continue
+            if abs(stats["cy"] - key["cy"]) > typical_h * 2.4:
+                continue
+            if stats["min_x"] - typical_w * 1.2 <= key["cx"] <= stats["max_x"] + typical_w * 1.2:
+                return True
+        return False
+
+    filtered = []
+    for row, row_keys in rows.items():
+        dense_row = len(row_keys) >= CONFIG["min_row_key_count"]
+        for key in row_keys:
+            wide_or_vertical_key = key["key_type"] in {"wide_key", "extra_wide_key", "spacebar", "vertical_key"}
+            local_island_key = has_local_row_support(key, row_keys) and has_neighbor_row_support(key, row)
+            useful_sparse_key = wide_or_vertical_key or local_island_key
+            if dense_row or useful_sparse_key:
+                filtered.append(key)
+
+    return reindex_rows_and_columns(filtered)
 
 
 def remove_top_status_row(keys):
@@ -1229,12 +1282,19 @@ def remove_large_gap_keys(image, keys):
         median_w = float(np.median([key["w"] for key in row_keys]))
         for key in row_keys:
             source = key.get("source")
+            has_close_row_neighbor = any(
+                other is not key
+                and abs(other["cy"] - key["cy"]) <= median_h * 0.70
+                and 0 < abs(other["cx"] - key["cx"]) <= median_w * 1.80
+                for other in row_keys
+            )
             top_right_edge_status_area = (
                 source == "edge"
                 and key["cx"] > img_w * 0.78
                 and key["cy"] < img_h * 0.34
                 and key["w"] >= median_w * 1.35
                 and key["h"] >= median_h * 1.20
+                and not has_close_row_neighbor
             )
             top_right_label_status_area = (
                 source == "legend"
@@ -1243,6 +1303,7 @@ def remove_large_gap_keys(image, keys):
                 and key["cy"] < img_h * 0.42
                 and key["h"] <= median_h * 1.25
                 and key["w"] <= median_w * 1.45
+                and not has_close_row_neighbor
             )
             if top_right_edge_status_area or top_right_label_status_area:
                 continue
@@ -1265,6 +1326,266 @@ def remove_large_gap_keys(image, keys):
                 if low_detail_body:
                     continue
 
+            filtered.append(key)
+
+    return reindex_rows_and_columns(filtered)
+
+
+def filter_low_detail_weak_keys(image, keys):
+    if not keys:
+        return keys
+
+    weak_sources = {"edge", "legend", "tophat"}
+    rows = {}
+    for key in keys:
+        rows.setdefault(key["row"], []).append(key)
+
+    filtered = []
+    for key in keys:
+        source = key.get("source")
+        if source not in weak_sources:
+            filtered.append(key)
+            continue
+
+        crop = image[key["y"] : key["y"] + key["h"], key["x"] : key["x"] + key["w"]]
+        if crop.size == 0:
+            continue
+
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        edge_density = float(np.mean(cv2.Canny(gray, 30, 100) > 0))
+        gray_std = float(np.std(gray))
+        small_blank_candidate = key["w"] * key["h"] < 1800
+        same_row_neighbors = [
+            other
+            for other in rows.get(key["row"], [])
+            if other is not key
+            and abs(other["cy"] - key["cy"]) <= max(key["h"], other["h"]) * 0.75
+            and 0 < abs(other["cx"] - key["cx"]) <= max(key["w"], other["w"]) * 1.9
+        ]
+
+        if small_blank_candidate and not same_row_neighbors and gray_std < 14.0 and edge_density < 0.07:
+            continue
+
+        filtered.append(key)
+
+    return reindex_rows_and_columns(filtered)
+
+
+def remove_status_indicator_runs(keys):
+    if len(keys) < 30:
+        return keys
+
+    normal_widths = [key["w"] for key in keys if key["key_type"] == "normal_key"]
+    typical_w = float(np.median(normal_widths or [key["w"] for key in keys]))
+    typical_h = float(np.median([key["h"] for key in keys]))
+
+    rows = {}
+    for key in keys:
+        rows.setdefault(key["row"], []).append(key)
+
+    remove_ids = set()
+    sorted_rows = sorted(rows)
+    for row in sorted_rows[1:-1]:
+        row_keys = sorted(rows[row], key=lambda item: item["cx"])
+        lower_keys = rows.get(row + 1, [])
+        for start in range(len(row_keys)):
+            run = []
+            for key in row_keys[start:]:
+                if key.get("source") != "tophat" or key["key_type"] != "normal_key":
+                    break
+                if run and key["cx"] - run[-1]["cx"] > typical_w * 1.45:
+                    break
+                run.append(key)
+            if len(run) < 2 or len(run) > 4:
+                continue
+
+            first_index = row_keys.index(run[0])
+            last_index = row_keys.index(run[-1])
+            if first_index == 0 or last_index >= len(row_keys) - 1:
+                continue
+
+            left_gap = run[0]["cx"] - row_keys[first_index - 1]["cx"]
+            right_gap = row_keys[last_index + 1]["cx"] - run[-1]["cx"]
+            isolated_run = left_gap > typical_w * 1.55 and right_gap > typical_w * 1.55
+            repeated_below = all(
+                any(abs(other["cx"] - key["cx"]) <= typical_w * 0.45 and typical_h * 0.65 <= other["cy"] - key["cy"] <= typical_h * 1.55 for other in lower_keys)
+                for key in run
+            )
+            if isolated_run and repeated_below:
+                remove_ids.update(id(key) for key in run)
+
+    if not remove_ids:
+        return keys
+    return reindex_rows_and_columns([key for key in keys if id(key) not in remove_ids])
+
+
+def remove_top_right_status_labels(image, keys):
+    if len(keys) < 20:
+        return keys
+
+    img_h, img_w = image.shape[:2]
+    first_row = min(key["row"] for key in keys)
+    filtered = []
+    for key in keys:
+        floating_status_label = (
+            key["row"] == first_row
+            and key.get("source") == "legend"
+            and key["key_type"] == "normal_key"
+            and key["cx"] > img_w * 0.62
+            and key["cy"] < img_h * 0.45
+            and key["w"] * key["h"] < 1800
+        )
+        if floating_status_label:
+            continue
+        filtered.append(key)
+
+    return reindex_rows_and_columns(filtered)
+
+
+def remove_arrow_flank_noise(image, keys):
+    if len(keys) < 20:
+        return keys
+
+    img_h = image.shape[0]
+    normal_widths = [key["w"] for key in keys if key["key_type"] == "normal_key"]
+    typical_w = float(np.median(normal_widths or [key["w"] for key in keys]))
+    typical_h = float(np.median([key["h"] for key in keys]))
+    weak_sources = {"edge", "legend"}
+
+    rows = {}
+    for key in keys:
+        rows.setdefault(key["row"], []).append(key)
+
+    remove_ids = set()
+    for row, row_keys in rows.items():
+        ordered = sorted(row_keys, key=lambda item: item["cx"])
+        lower_keys = rows.get(row + 1, [])
+        for left, center, right in zip(ordered, ordered[1:], ordered[2:]):
+            if center["cy"] < img_h * 0.50:
+                continue
+            weak_flanks = left.get("source") in weak_sources and right.get("source") in weak_sources
+            strong_center = center.get("source") not in weak_sources
+            compact_triplet = (
+                left["w"] * left["h"] < 1800
+                and right["w"] * right["h"] < 1800
+                and 0 < center["cx"] - left["cx"] <= typical_w * 1.8
+                and 0 < right["cx"] - center["cx"] <= typical_w * 1.8
+                and max(abs(left["cy"] - center["cy"]), abs(right["cy"] - center["cy"])) <= typical_h * 0.55
+            )
+            lower_arrow_cluster = sum(
+                1
+                for key in lower_keys
+                if abs(key["cy"] - center["cy"]) <= typical_h * 1.8
+                and abs(key["cx"] - center["cx"]) <= typical_w * 2.2
+            ) >= 3
+            if weak_flanks and strong_center and compact_triplet and lower_arrow_cluster:
+                remove_ids.update({id(left), id(right)})
+
+    if not remove_ids:
+        return keys
+    return reindex_rows_and_columns([key for key in keys if id(key) not in remove_ids])
+
+
+def remove_right_gap_edge_islands(keys):
+    if len(keys) < 30:
+        return keys
+
+    normal_widths = [key["w"] for key in keys if key["key_type"] == "normal_key"]
+    typical_w = float(np.median(normal_widths or [key["w"] for key in keys]))
+    typical_h = float(np.median([key["h"] for key in keys]))
+
+    rows = {}
+    for key in keys:
+        rows.setdefault(key["row"], []).append(key)
+
+    remove_ids = set()
+    for row, row_keys in rows.items():
+        ordered = sorted(row_keys, key=lambda item: item["cx"])
+        lower_keys = rows.get(row + 1, [])
+        for index in range(1, len(ordered) - 1):
+            key = ordered[index]
+            if key.get("source") != "edge" or key["key_type"] != "normal_key":
+                continue
+            left_gap = key["cx"] - ordered[index - 1]["cx"]
+            right_gap = ordered[index + 1]["cx"] - key["cx"]
+            next_key_is_higher_block = ordered[index + 1]["cy"] < key["cy"] - typical_h * 0.30
+            has_same_x_below = any(abs(other["cx"] - key["cx"]) <= typical_w * 0.45 and typical_h * 0.60 <= other["cy"] - key["cy"] <= typical_h * 1.45 for other in lower_keys)
+            has_lower_side_support = any(other["cx"] < key["cx"] and key["cx"] - other["cx"] <= typical_w * 1.2 for other in lower_keys) and any(
+                other["cx"] > key["cx"] and other["cx"] - key["cx"] <= typical_w * 1.8 for other in lower_keys
+            )
+            if left_gap <= typical_w * 1.60 and right_gap >= typical_w * 1.65 and not has_same_x_below and (has_lower_side_support or next_key_is_higher_block):
+                remove_ids.add(id(key))
+
+    if not remove_ids:
+        return keys
+    return reindex_rows_and_columns([key for key in keys if id(key) not in remove_ids])
+
+
+def remove_dark_edge_blanks(image, keys):
+    return keys
+
+
+def filter_structure_outliers(keys):
+    if len(keys) < 20:
+        return keys
+
+    normal_widths = [key["w"] for key in keys if key["key_type"] == "normal_key"]
+    typical_w = float(np.median(normal_widths or [key["w"] for key in keys]))
+    typical_h = float(np.median([key["h"] for key in keys]))
+
+    rows = {}
+    for key in keys:
+        rows.setdefault(key["row"], []).append(key)
+
+    row_steps = {}
+    for row, row_keys in rows.items():
+        ordered = sorted(row_keys, key=lambda item: item["cx"])
+        gaps = [
+            right["cx"] - left["cx"]
+            for left, right in zip(ordered, ordered[1:])
+            if typical_w * 0.75 <= right["cx"] - left["cx"] <= typical_w * 2.35
+        ]
+        row_steps[row] = float(np.median(gaps)) if gaps else typical_w * 1.45
+
+    def has_same_row_structure(key, row_keys, step):
+        close_neighbors = [
+            other
+            for other in row_keys
+            if other is not key
+            and abs(other["cy"] - key["cy"]) <= typical_h * 0.80
+            and typical_w * 0.50 <= abs(other["cx"] - key["cx"]) <= step * 1.75
+        ]
+        return len(close_neighbors) >= 1
+
+    def has_vertical_structure(key):
+        for other in keys:
+            if other is key:
+                continue
+            if abs(other["cx"] - key["cx"]) > typical_w * 0.85:
+                continue
+            if typical_h * 0.65 <= abs(other["cy"] - key["cy"]) <= typical_h * 2.45:
+                return True
+        return False
+
+    filtered = []
+    weak_sources = {"legend", "tophat", "edge"}
+    inferred_sources = {"row_gap_inferred", "spacebar_modifier_inferred", "navigation_top_inferred", "vertical_edge_inferred"}
+
+    for row, row_keys in rows.items():
+        step = row_steps[row]
+        for key in row_keys:
+            source = key.get("source")
+            dense_row = len(row_keys) >= CONFIG["min_row_key_count"]
+            same_row_structure = has_same_row_structure(key, row_keys, step)
+            vertical_structure = has_vertical_structure(key)
+            large_key = key["key_type"] in {"wide_key", "extra_wide_key", "spacebar", "vertical_key"}
+            inferred_key = source in inferred_sources
+            weak_key = source in weak_sources or key["key_type"] == "unknown_key" or float(key.get("confidence", 0.0)) < 0.5
+
+            if weak_key and not (same_row_structure or vertical_structure or large_key):
+                continue
+            if not dense_row and not (same_row_structure or vertical_structure or large_key or inferred_key):
+                continue
             filtered.append(key)
 
     return reindex_rows_and_columns(filtered)
@@ -1303,19 +1624,35 @@ def expand_bottom_row_spacebars(keys):
 
 
 def align_row_centers(keys):
+    if len(keys) < 6:
+        return keys
+
+    typical_w = float(np.median([key["w"] for key in keys if key["key_type"] == "normal_key"] or [key["w"] for key in keys]))
+
     rows = {}
     for key in keys:
         rows.setdefault(key["row"], []).append(key)
 
     aligned = []
     for row_keys in rows.values():
-        median_cy = float(np.median([key["cy"] for key in row_keys]))
-        median_h = float(np.median([key["h"] for key in row_keys]))
         for key in row_keys:
             item = dict(key)
-            if item["h"] <= median_h * 1.8 and item["key_type"] != "vertical_key":
-                item["cy"] = median_cy
-                item["y"] = int(round(median_cy - item["h"] / 2))
+            local_keys = [
+                other
+                for other in row_keys
+                if abs(other["cx"] - item["cx"]) <= typical_w * 3.2
+                and abs(other["cy"] - item["cy"]) <= max(item["h"], other["h"]) * 0.95
+            ]
+            if len(local_keys) >= 4:
+                local_median_cy = float(np.median([other["cy"] for other in local_keys]))
+                local_median_h = float(np.median([other["h"] for other in local_keys]))
+            else:
+                local_median_cy = item["cy"]
+                local_median_h = item["h"]
+
+            if item["h"] <= local_median_h * 1.8 and item["key_type"] != "vertical_key":
+                item["cy"] = local_median_cy
+                item["y"] = int(round(local_median_cy - item["h"] / 2))
             aligned.append(item)
 
     return reindex_rows_and_columns(aligned)
@@ -1340,9 +1677,23 @@ def finalize_candidates(image, candidates, preprocessed):
     keys = filter_sparse_rows(keys)
     keys = remove_top_status_row(keys)
     keys = remove_large_gap_keys(image, keys)
+    keys = filter_low_detail_weak_keys(image, keys)
+    keys = remove_status_indicator_runs(keys)
+    keys = remove_top_right_status_labels(image, keys)
+    keys = remove_arrow_flank_noise(image, keys)
+    keys = remove_right_gap_edge_islands(keys)
+    keys = remove_dark_edge_blanks(image, keys)
+    keys = filter_structure_outliers(keys)
     keys = expand_bottom_row_spacebars(keys)
     keys = align_row_centers(keys)
     keys = suppress_close_center_duplicates(keys)
+    keys = filter_low_detail_weak_keys(image, keys)
+    keys = remove_status_indicator_runs(keys)
+    keys = remove_top_right_status_labels(image, keys)
+    keys = remove_arrow_flank_noise(image, keys)
+    keys = remove_right_gap_edge_islands(keys)
+    keys = remove_dark_edge_blanks(image, keys)
+    keys = filter_structure_outliers(keys)
     return keys, len(candidates), preprocessed
 
 

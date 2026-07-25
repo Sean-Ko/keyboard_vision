@@ -1,12 +1,10 @@
 import argparse
-import json
-from datetime import datetime
 
 from config import OUTPUT_DIR
 from detector import run_auto_detection
 from gui_review import fine_tune_key_records
 from image_io import list_input_images, load_image, select_input_image
-from outputs import clean_outputs, draw_result, safe_filename_part, save_outputs
+from outputs import clean_outputs, draw_result, save_outputs
 
 
 def run_single_image(image_arg, model_name, no_gui=False):
@@ -55,24 +53,13 @@ def run_batch_input(model_name):
         print("No input images found.")
         return 1
 
-    report = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "model": model_name,
-        "images": [],
-    }
     exit_code = 0
     for image_path in images:
         print(f"\n=== Batch image: {image_path.name} ===")
         code, result = run_single_image(image_path, model_name, no_gui=True)
         exit_code = max(exit_code, code)
-        if result is not None:
-            report["images"].append(result)
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = OUTPUT_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{safe_filename_part(model_name)}_batch_report.json"
-    with report_path.open("w", encoding="utf-8") as file:
-        json.dump(report, file, ensure_ascii=False, indent=2)
-    print(f"\nBatch report: {report_path}")
+    print(f"\nBatch complete. Outputs are in: {OUTPUT_DIR}")
     return exit_code
 
 
