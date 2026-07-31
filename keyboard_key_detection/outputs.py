@@ -20,7 +20,7 @@ def safe_filename_part(text):
     return "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in str(text))
 
 
-def build_training_record(key_records, model_name, input_image_path, output_image_path, image_shape):
+def build_training_record(key_records, model_name, input_image_path, raw_image_path, annotated_image_path, image_shape):
     height, width = image_shape[:2]
     channels = image_shape[2] if len(image_shape) == 3 else 1
     source_path = Path(input_image_path) if input_image_path is not None else None
@@ -60,7 +60,8 @@ def build_training_record(key_records, model_name, input_image_path, output_imag
         "image": {
             "file_name": source_path.name if source_path else None,
             "source_path": str(source_path) if source_path else None,
-            "annotated_image_path": str(output_image_path),
+            "raw_image_path": str(raw_image_path),
+            "annotated_image_path": str(annotated_image_path),
             "width": int(width),
             "height": int(height),
             "channels": int(channels),
@@ -76,7 +77,7 @@ def build_training_record(key_records, model_name, input_image_path, output_imag
     }
 
 
-def save_outputs(image, key_records, model_name, input_image_path=None):
+def save_outputs(raw_image, annotated_image, key_records, model_name, input_image_path=None):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     safe_model_name = safe_filename_part(model_name)
@@ -86,15 +87,17 @@ def save_outputs(image, key_records, model_name, input_image_path=None):
         safe_image_name = safe_filename_part(Path(input_image_path).stem)
         prefix = f"{timestamp}_{safe_image_name}_{safe_model_name}"
 
-    image_path = OUTPUT_DIR / f"{prefix}_calibrated.png"
+    raw_image_path = OUTPUT_DIR / f"{prefix}_raw.png"
+    annotated_image_path = OUTPUT_DIR / f"{prefix}_calibrated.png"
     json_path = OUTPUT_DIR / f"{prefix}_keys.json"
 
-    cv2.imwrite(str(image_path), image)
-    training_record = build_training_record(key_records, model_name, input_image_path, image_path, image.shape)
+    cv2.imwrite(str(raw_image_path), raw_image)
+    cv2.imwrite(str(annotated_image_path), annotated_image)
+    training_record = build_training_record(key_records, model_name, input_image_path, raw_image_path, annotated_image_path, raw_image.shape)
     with json_path.open("w", encoding="utf-8") as file:
         json.dump(training_record, file, ensure_ascii=False, indent=2)
 
-    return image_path, json_path
+    return raw_image_path, annotated_image_path, json_path
 
 
 def clean_outputs(keep_latest_per_input=True):
@@ -109,7 +112,7 @@ def clean_outputs(keep_latest_per_input=True):
         image_stems = [safe_filename_part(path.stem) for path in list_input_images()]
         for stem in image_stems:
             related = [path for path in files if f"_{stem}_" in path.name]
-            for suffix in ("_calibrated.png", "_keys.json"):
+            for suffix in ("_raw.png", "_calibrated.png", "_keys.json"):
                 matches = sorted((path for path in related if path.name.endswith(suffix)), key=lambda item: item.stat().st_mtime)
                 if matches:
                     keep.add(matches[-1])

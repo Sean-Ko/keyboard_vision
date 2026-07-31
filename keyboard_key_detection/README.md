@@ -1,8 +1,15 @@
 # Keyboard Key Detection
 
-這個資料夾是主程式所在位置。入口檔案是 `calibrate_keyboard.py`，實際 CLI 流程在 `app.py`，核心影像演算法在 `detector_core.py`。
+這個資料夾是主程式所在位置。入口檔案是 `calibrate_keyboard.py`，實際 CLI 流程在 `app.py`，核心 OpenCV 演算法在 `detector_core.py`。
 
-目前定位是「維修輔助 + 標註資料收集」。OpenCV 會先產生初始綠點，使用者可用 GUI 修正，最後輸出圖片與訓練友善 JSON，日後可轉成模型訓練資料。
+目前用途：
+
+```text
+自動偵測按鍵中心
+-> GUI 人工修正
+-> 輸出 raw / calibrated / JSON 三件套
+-> 累積未來可訓練資料
+```
 
 ## 安裝
 
@@ -64,22 +71,24 @@ detector_core.py       OpenCV 核心偵測演算法
 detector.py            將核心演算法輸出轉成標準座標資料
 gui_review.py          人工微調 GUI
 image_io.py            圖片讀取與選圖
-outputs.py             輸出圖片與資料集 JSON
+outputs.py             輸出 raw / calibrated / JSON
 input/                 放待偵測圖片
 output/                放輸出結果
 ```
 
 ## 輸出
 
-每張圖片只輸出：
+每張圖片會輸出：
 
 ```text
+*_raw.png
 *_calibrated.png
 *_keys.json
 ```
 
-`*_calibrated.png` 是綠點標註圖片。  
-`*_keys.json` 是資料集標註 JSON。
+- `*_raw.png`：原始乾淨圖片，未來訓練模型用。
+- `*_calibrated.png`：綠點標註圖，維修師檢查用。
+- `*_keys.json`：資料集標註 JSON。
 
 目前不輸出 CSV，也不輸出 batch report。
 
@@ -108,19 +117,12 @@ confidence              信心值
 template                目前的 row/col 輔助資訊
 ```
 
-這種格式保留了維修時要看的座標，也保留了未來訓練模型需要的原圖尺寸、正規化座標與人工修正來源。
+## 日後接實體機台
 
-## 演算法設計
-
-目前採用非 AI 的 OpenCV 流程：
+這份 JSON 目前保存的是圖片座標。實體機台需要再增加一層校正：
 
 ```text
-圖片前處理
--> 找輪廓候選鍵帽
--> 過濾 LED、文字、外殼雜訊
--> 用局部排列結構輔助判斷
--> 保留方向鍵、導覽鍵等非主鍵區的小鍵群
--> 需要時由使用者做少量人工微調
+image_x, image_y -> machine_x, machine_y
 ```
 
-OpenCV 在這個階段的價值是快速產生初始標註，減少人工從零點選的工作量。如果未來累積足夠多「原圖 + 修正後 JSON」，可以再把資料轉成 YOLO、keypoint detection 或 segmentation 訓練格式。
+建議用固定相機、固定平台、鍵盤定位治具與 4 個平台校正點，把圖片座標轉成三軸機台的毫米座標。

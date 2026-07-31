@@ -26,15 +26,16 @@ def run_single_image(image_arg, model_name, no_gui=False):
             print(exc)
             return 1, None
 
-    output_image = draw_result(image, key_records)
-    image_output, json_output = save_outputs(output_image, key_records, model_name, image_path)
+    annotated_image = draw_result(image, key_records)
+    raw_output, annotated_output, json_output = save_outputs(image, annotated_image, key_records, model_name, image_path)
 
     result = {
         "input_image": str(image_path),
         "model": model_name,
         "keys": len(key_records),
         "raw_candidates": detection_info["raw_count"],
-        "output_image": str(image_output),
+        "raw_image": str(raw_output),
+        "annotated_image": str(annotated_output),
         "json": str(json_output),
     }
 
@@ -42,7 +43,8 @@ def run_single_image(image_arg, model_name, no_gui=False):
     print(f"- Input image: {image_path}")
     print(f"- Model: {model_name}")
     print(f"- Keys: {len(key_records)}")
-    print(f"- Output image: {image_output}")
+    print(f"- Raw image: {raw_output}")
+    print(f"- Annotated image: {annotated_output}")
     print(f"- JSON: {json_output}")
     return 0, result
 
